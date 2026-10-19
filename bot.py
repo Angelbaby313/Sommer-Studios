@@ -272,25 +272,33 @@ async def setup(interaction: discord.Interaction):
     }
 
     # Entrance
-    entrance = await get_or_create_category(guild, "🎟️ STUDIO ENTRANCE")
+    entrance = await get_or_create_category(guild, "🌸🎟️ STUDIO ENTRANCE")
     welcome = await get_or_create_text(guild, entrance, "welcome", public_read, "Welcome to Sommer Studios.")
     verify = await get_or_create_text(guild, entrance, "verify", public_read, "Verify to receive Studio Guest access.")
     info = await get_or_create_text(guild, entrance, "helpful-info", staff_post, "Studio information, ordering process and helpful details.")
 
     # Services
-    services_cat = await get_or_create_category(guild, "🌸 SOMMER'S SERVICES")
+    services_cat = await get_or_create_category(guild, "🌸🎬 SOMMER'S SERVICES")
     services = await get_or_create_text(guild, services_cat, "services-offered", staff_post)
     prices = await get_or_create_text(guild, services_cat, "price-list", staff_post)
     ticket = await get_or_create_text(guild, services_cat, "start-a-project", staff_post)
 
     # Studio
-    studio_cat = await get_or_create_category(guild, "🎬 THE STUDIO")
+    studio_cat = await get_or_create_category(guild, "🎥✨ THE STUDIO")
     showcase = await get_or_create_text(guild, studio_cat, "showcase", staff_post, "Completed Sommer Studios work and portfolio.")
     projects = await get_or_create_text(guild, studio_cat, "current-projects", staff_post, "Projects currently in production.")
     partners = await get_or_create_text(guild, studio_cat, "partners", staff_post, "Official Sommer Studios partners.")
 
+    # Public community / Hollywood-style backlot
+    community_cat = await get_or_create_category(guild, "🌻🎞️ STUDIO BACKLOT")
+    await get_or_create_text(guild, community_cat, "🌸・studio-lounge", verified, "A welcoming public community space for Studio Guests, VIPs and Creators.")
+    await get_or_create_text(guild, community_cat, "🎬・community-meetings", staff_post, "Community meeting announcements, Studio updates and scheduled conversations.")
+    await get_or_create_voice(guild, community_cat, "🌻 The Backlot • Chill VC", verified)
+    await get_or_create_voice(guild, community_cat, "🎬 Community Meeting Room", verified)
+    await get_or_create_voice(guild, community_cat, "🛟 Studio Support • Help VC", verified)
+
     # VIP
-    vip_cat = await get_or_create_category(guild, "⭐ VIP BACKLOT", vip_only)
+    vip_cat = await get_or_create_category(guild, "🌻⭐ VIP BACKLOT", vip_only)
     free_resources = await get_or_create_text(guild, vip_cat, "free-resources", vip_announce)
     drops = await get_or_create_text(guild, vip_cat, "resource-drops", vip_announce)
     exclusives = await get_or_create_text(guild, vip_cat, "vip-exclusives", vip_announce)
@@ -298,7 +306,7 @@ async def setup(interaction: discord.Interaction):
     vip_updates = await get_or_create_text(guild, vip_cat, "vip-updates", vip_announce)
 
     # Creator area
-    creator_cat = await get_or_create_category(guild, "🔐 CREATOR LOT", creator_only)
+    creator_cat = await get_or_create_category(guild, "🎨🔐 CREATOR LOT", creator_only)
     creator_chat = await get_or_create_text(guild, creator_cat, "creator-chat", creator_only)
     await get_or_create_voice(guild, creator_cat, "🎙️ Creator VC", creator_only)
 
@@ -309,7 +317,7 @@ async def setup(interaction: discord.Interaction):
         staff: discord.PermissionOverwrite(view_channel=True),
         bot_member: discord.PermissionOverwrite(view_channel=True, manage_channels=True)
     })
-    logs_cat = await get_or_create_category(guild, "🔒 STUDIO MANAGEMENT", {
+    logs_cat = await get_or_create_category(guild, "🎬🔒 STUDIO MANAGEMENT", {
         everyone: discord.PermissionOverwrite(view_channel=False),
         owner: discord.PermissionOverwrite(view_channel=True),
         staff: discord.PermissionOverwrite(view_channel=True),
