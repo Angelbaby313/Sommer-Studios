@@ -21,6 +21,8 @@ class SommerBot(commands.Bot):
         self.add_view(VerifyView())
         self.add_view(TicketPanelView())
         self.add_view(TicketControlView())
+        self.add_view(RoleRequestView())
+        self.add_view(ExclusivePartnerView())
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -39,6 +41,8 @@ ROLE_STAFF = "🎥 Studio Staff"
 ROLE_CREATOR = "🎨 Studio Creator"
 ROLE_VIP = "⭐ STUDIO VIP"
 ROLE_GUEST = "🎟️ Studio Guest"
+ROLE_STREAMER = "🎥 Streamer"
+ROLE_EXCLUSIVE = "💎 Exclusive Partner"
 
 def pink_embed(title, description="", **kwargs):
     e = discord.Embed(title=title, description=description, color=discord.Color.from_rgb(236, 72, 153), **kwargs)
@@ -242,6 +246,71 @@ class TicketControlView(discord.ui.View):
         await interaction.followup.send("Closing project ticket…", ephemeral=True)
         await interaction.channel.delete(reason=f"Closed by {interaction.user}")
 
+
+class RoleRequestModal(discord.ui.Modal):
+    def __init__(self, role_name):
+        super().__init__(title=f"Request • {role_name[:30]}")
+        self.role_name = role_name
+        self.reason = discord.ui.TextInput(label="Tell us about what you do", style=discord.TextStyle.paragraph, max_length=800, required=True)
+        self.links = discord.ui.TextInput(label="Links / portfolio / socials", style=discord.TextStyle.paragraph, max_length=600, required=False)
+        self.add_item(self.reason)
+        self.add_item(self.links)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        channel = discord.utils.get(guild.text_channels, name="role-requests")
+        if not channel:
+            return await interaction.response.send_message("Role request channel is missing. Please tell Studio Staff.", ephemeral=True)
+        e = pink_embed(f"🎭 Role Request • {self.role_name}", f"Requested by {interaction.user.mention}")
+        e.add_field(name="About", value=str(self.reason), inline=False)
+        e.add_field(name="Links / Proof", value=str(self.links) or "None provided", inline=False)
+        e.set_footer(text=f"User ID: {interaction.user.id} • Review and assign manually if approved")
+        await channel.send(embed=e)
+        await interaction.response.send_message(f"🩷 Your **{self.role_name}** request was sent to Studio Staff for review.", ephemeral=True)
+
+class RoleRequestSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Studio Creator", value=ROLE_CREATOR, emoji="🎨", description="Showcase your creative services/work"),
+            discord.SelectOption(label="Streamer", value=ROLE_STREAMER, emoji="🎥", description="Join the streamer support side of the Studio"),
+        ]
+        super().__init__(placeholder="Choose the role you want to request…", min_values=1, max_values=1, options=options, custom_id="sommer:role_request_select")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(RoleRequestModal(self.values[0]))
+
+class RoleRequestView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(RoleRequestSelect())
+
+class ExclusivePartnerModal(discord.ui.Modal, title="Exclusive Partner Application"):
+    business = discord.ui.TextInput(label="Creator / business name", max_length=100, required=True)
+    services = discord.ui.TextInput(label="What services do you offer?", style=discord.TextStyle.paragraph, max_length=800, required=True)
+    links = discord.ui.TextInput(label="Portfolio / Discord / socials", style=discord.TextStyle.paragraph, max_length=600, required=True)
+    why = discord.ui.TextInput(label="Why partner with Sommer Studios?", style=discord.TextStyle.paragraph, max_length=800, required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        channel = discord.utils.get(interaction.guild.text_channels, name="partner-applications")
+        if not channel:
+            return await interaction.response.send_message("Partner application channel is missing. Please tell Studio Staff.", ephemeral=True)
+        e = pink_embed("💎 Exclusive Partner Application", f"Applicant: {interaction.user.mention}")
+        e.add_field(name="Creator / Business", value=str(self.business), inline=False)
+        e.add_field(name="Services", value=str(self.services), inline=False)
+        e.add_field(name="Links", value=str(self.links), inline=False)
+        e.add_field(name="Why Sommer Studios?", value=str(self.why), inline=False)
+        e.set_footer(text=f"User ID: {interaction.user.id} • Exclusive Partner is approval-only")
+        await channel.send(embed=e)
+        await interaction.response.send_message("💎 Your **Exclusive Partner** application was submitted for review.", ephemeral=True)
+
+class ExclusivePartnerView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Apply for Exclusive Partnership", emoji="💎", style=discord.ButtonStyle.primary, custom_id="sommer:exclusive_apply")
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ExclusivePartnerModal())
+
 @bot.event
 async def on_ready():
     print(f"Sommer Studios is online as {bot.user}.")
@@ -268,6 +337,8 @@ async def setup(interaction: discord.Interaction):
     creator = await get_or_create_role(guild, ROLE_CREATOR, color=discord.Color.from_rgb(96,165,250), hoist=True)
     vip = await get_or_create_role(guild, ROLE_VIP, color=discord.Color.gold(), hoist=True)
     guest = await get_or_create_role(guild, ROLE_GUEST, color=discord.Color.from_rgb(244,114,182))
+    streamer = await get_or_create_role(guild, ROLE_STREAMER, color=discord.Color.from_rgb(129,140,248), hoist=True)
+    exclusive = await get_or_create_role(guild, ROLE_EXCLUSIVE, color=discord.Color.from_rgb(217,70,239), hoist=True)
     client = await get_or_create_role(guild, "🎬 Studio Client", color=discord.Color.from_rgb(251,191,36), hoist=True)
 
     if OWNER_ID:
@@ -288,6 +359,8 @@ async def setup(interaction: discord.Interaction):
         client: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         vip: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         creator: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        streamer: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        exclusive: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         owner: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         staff: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True)
@@ -296,6 +369,8 @@ async def setup(interaction: discord.Interaction):
     staff_post[guest] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
     staff_post[vip] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
     staff_post[creator] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+    staff_post[streamer] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+    staff_post[exclusive] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
 
     vip_only = {
         everyone: discord.PermissionOverwrite(view_channel=False),
@@ -332,6 +407,17 @@ async def setup(interaction: discord.Interaction):
     showcase = await get_or_create_text(guild, studio_cat, "showcase", staff_post, "Completed Sommer Studios work and portfolio.")
     projects = await get_or_create_text(guild, studio_cat, "current-projects", staff_post, "Projects currently in production.")
     partners = await get_or_create_text(guild, studio_cat, "partners", staff_post, "Official Sommer Studios partners.")
+
+    # Role requests + exclusive partner applications
+    requests_cat = await get_or_create_category(guild, "🎭✨ STUDIO APPLICATIONS", verified)
+    request_role = await get_or_create_text(guild, requests_cat, "request-a-role", staff_post, "Request Studio Creator or Streamer access.")
+    apply_partner = await get_or_create_text(guild, requests_cat, "apply-exclusive-partner", staff_post, "Apply to become an Exclusive Sommer Studios Partner.")
+    role_requests = await get_or_create_text(guild, logs_cat if 'logs_cat' in locals() else requests_cat, "role-requests", {
+        everyone: discord.PermissionOverwrite(view_channel=False), owner: discord.PermissionOverwrite(view_channel=True), staff: discord.PermissionOverwrite(view_channel=True), bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    })
+    partner_apps = await get_or_create_text(guild, logs_cat if 'logs_cat' in locals() else requests_cat, "partner-applications", {
+        everyone: discord.PermissionOverwrite(view_channel=False), owner: discord.PermissionOverwrite(view_channel=True), staff: discord.PermissionOverwrite(view_channel=True), bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    })
 
     # Public community / Hollywood-style backlot
     community_cat = await get_or_create_category(guild, "🌻🎞️ STUDIO BACKLOT", aliases=("STUDIO BACKLOT",))
@@ -437,6 +523,19 @@ async def setup(interaction: discord.Interaction):
     if not [m async for m in partners.history(limit=1)]:
         await partners.send(embed=pink_embed("🤝 Studio Partners", "Official creator and development partners will be announced here. Partner storefronts will be added only after approval."))
 
+
+    if not [m async for m in request_role.history(limit=1)]:
+        await request_role.send(embed=pink_embed(
+            "🎭 Request a Studio Role",
+            "Need access beyond **Studio Guest**? Choose a role below and send your request to Studio Staff.\n\n🎨 **Studio Creator** — showcase your creative services/work.\n🎥 **Streamer** — join the streamer support side and live-promotion community.\n\n⭐ **STUDIO VIP** and 🎬 **Studio Client** are handled separately and cannot be requested here."
+        ), view=RoleRequestView())
+
+    if not [m async for m in apply_partner.history(limit=1)]:
+        await apply_partner.send(embed=pink_embed(
+            "💎 Apply for Exclusive Partnership",
+            "Exclusive Partners are a select group of trusted creators/businesses officially partnered with **Sommer Studios**. Approved partners may receive a dedicated Studio presence and may be able to accept client inquiries/tickets directly through the Studio.\n\nApplying does not guarantee approval. Tap below to tell us about your business and services."
+        ), view=ExclusivePartnerView())
+
     if not [m async for m in free_resources.history(limit=1)]:
         await free_resources.send(embed=pink_embed("🎁 VIP Free Resources", "Exclusive free resources for **STUDIO VIP** members will live here."))
     if not [m async for m in drops.history(limit=1)]:
@@ -448,7 +547,7 @@ async def setup(interaction: discord.Interaction):
     if not [m async for m in creator_chat.history(limit=1)]:
         await creator_chat.send(embed=pink_embed("🎨 Creator Lot", "Private workspace for approved **Studio Creators** and Sommer Studios management."))
 
-    await interaction.followup.send("🎬 **Sommer Studios is built!** Channels, roles, verification, VIP Backlot, Creator Lot and project tickets are ready.", ephemeral=True)
+    await interaction.followup.send("🎬 **Sommer Studios is built!** Channels, roles, verification, VIP Backlot, Creator Lot, Streamer/Partner roles, role requests, partner applications and project tickets are ready.", ephemeral=True)
 
 @bot.tree.command(name="vip", description="Add or remove STUDIO VIP access")
 @app_commands.checks.has_permissions(administrator=True)
