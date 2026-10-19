@@ -55,7 +55,7 @@ def _clean_name(name):
     # Compare names without decorative emoji/punctuation so /setup can reuse older channels/categories.
     return re.sub(r"[^a-z0-9]+", "", name.lower())
 
-async def get_or_create_category(guild, name, overwrites=None):
+async def get_or_create_category(guild, name, overwrites=None, aliases=()):
     wanted = {_clean_name(name), *(_clean_name(a) for a in aliases)}
     cat = next((c for c in guild.categories if _clean_name(c.name) in wanted), None)
     if not cat:
@@ -70,7 +70,7 @@ async def get_or_create_category(guild, name, overwrites=None):
             await cat.edit(**edits)
     return cat
 
-async def get_or_create_text(guild, category, name, overwrites=None, topic=None):
+async def get_or_create_text(guild, category, name, overwrites=None, topic=None, aliases=()):
     wanted = {_clean_name(name), *(_clean_name(a) for a in aliases)}
     ch = next((c for c in guild.text_channels if _clean_name(c.name) in wanted), None)
     if not ch:
@@ -89,7 +89,7 @@ async def get_or_create_text(guild, category, name, overwrites=None, topic=None)
             await ch.edit(**edits)
     return ch
 
-async def get_or_create_voice(guild, category, name, overwrites=None):
+async def get_or_create_voice(guild, category, name, overwrites=None, aliases=()):
     wanted = {_clean_name(name), *(_clean_name(a) for a in aliases)}
     ch = next((c for c in guild.voice_channels if _clean_name(c.name) in wanted), None)
     if not ch:
