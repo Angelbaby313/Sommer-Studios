@@ -51,22 +51,59 @@ async def get_or_create_role(guild, name, **kwargs):
         role = await guild.create_role(name=name, **kwargs)
     return role
 
+def _clean_name(name):
+    # Compare names without decorative emoji/punctuation so /setup can reuse older channels/categories.
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
 async def get_or_create_category(guild, name, overwrites=None):
-    cat = discord.utils.get(guild.categories, name=name)
+    wanted = {_clean_name(name), *(_clean_name(a) for a in aliases)}
+    cat = next((c for c in guild.categories if _clean_name(c.name) in wanted), None)
     if not cat:
         cat = await guild.create_category(name, overwrites=overwrites or {})
+    else:
+        edits = {}
+        if cat.name != name:
+            edits["name"] = name
+        if overwrites is not None:
+            edits["overwrites"] = overwrites
+        if edits:
+            await cat.edit(**edits)
     return cat
 
 async def get_or_create_text(guild, category, name, overwrites=None, topic=None):
-    ch = discord.utils.get(guild.text_channels, name=name)
+    wanted = {_clean_name(name), *(_clean_name(a) for a in aliases)}
+    ch = next((c for c in guild.text_channels if _clean_name(c.name) in wanted), None)
     if not ch:
         ch = await guild.create_text_channel(name, category=category, overwrites=overwrites or {}, topic=topic)
+    else:
+        edits = {}
+        if ch.category != category:
+            edits["category"] = category
+        if ch.name != name:
+            edits["name"] = name
+        if overwrites is not None:
+            edits["overwrites"] = overwrites
+        if topic is not None and ch.topic != topic:
+            edits["topic"] = topic
+        if edits:
+            await ch.edit(**edits)
     return ch
 
 async def get_or_create_voice(guild, category, name, overwrites=None):
-    ch = discord.utils.get(guild.voice_channels, name=name)
+    wanted = {_clean_name(name), *(_clean_name(a) for a in aliases)}
+    ch = next((c for c in guild.voice_channels if _clean_name(c.name) in wanted), None)
     if not ch:
         ch = await guild.create_voice_channel(name, category=category, overwrites=overwrites or {})
+    else:
+        edits = {}
+        if ch.category != category:
+            edits["category"] = category
+        if ch.name != name:
+            edits["name"] = name
+        if overwrites is not None:
+            edits["overwrites"] = overwrites
+        if edits:
+            await ch.edit(**edits)
     return ch
 
 def is_management(member):
@@ -226,6 +263,7 @@ async def setup(interaction: discord.Interaction):
     creator = await get_or_create_role(guild, ROLE_CREATOR, color=discord.Color.from_rgb(96,165,250), hoist=True)
     vip = await get_or_create_role(guild, ROLE_VIP, color=discord.Color.gold(), hoist=True)
     guest = await get_or_create_role(guild, ROLE_GUEST, color=discord.Color.from_rgb(244,114,182))
+    client = await get_or_create_role(guild, "🎬 Studio Client", color=discord.Color.from_rgb(251,191,36), hoist=True)
 
     if OWNER_ID:
         member = guild.get_member(OWNER_ID)
@@ -242,6 +280,7 @@ async def setup(interaction: discord.Interaction):
     verified = {
         everyone: discord.PermissionOverwrite(view_channel=False),
         guest: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        client: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         vip: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         creator: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         owner: discord.PermissionOverwrite(view_channel=True, send_messages=True),
@@ -272,7 +311,7 @@ async def setup(interaction: discord.Interaction):
     }
 
     # Entrance
-    entrance = await get_or_create_category(guild, "🌸🎟️ STUDIO ENTRANCE")
+    entrance = await get_or_create_category(guild, "🎟️ STUDIO ENTRANCE")
     welcome = await get_or_create_text(guild, entrance, "welcome", public_read, "Welcome to Sommer Studios.")
     verify = await get_or_create_text(guild, entrance, "verify", public_read, "Verify to receive Studio Guest access.")
     info = await get_or_create_text(guild, entrance, "helpful-info", staff_post, "Studio information, ordering process and helpful details.")
@@ -284,21 +323,32 @@ async def setup(interaction: discord.Interaction):
     ticket = await get_or_create_text(guild, services_cat, "start-a-project", staff_post)
 
     # Studio
-    studio_cat = await get_or_create_category(guild, "🎥✨ THE STUDIO")
+    studio_cat = await get_or_create_category(guild, "🎬 THE STUDIO")
     showcase = await get_or_create_text(guild, studio_cat, "showcase", staff_post, "Completed Sommer Studios work and portfolio.")
     projects = await get_or_create_text(guild, studio_cat, "current-projects", staff_post, "Projects currently in production.")
     partners = await get_or_create_text(guild, studio_cat, "partners", staff_post, "Official Sommer Studios partners.")
 
     # Public community / Hollywood-style backlot
     community_cat = await get_or_create_category(guild, "🌻🎞️ STUDIO BACKLOT")
-    await get_or_create_text(guild, community_cat, "🌸・studio-lounge", verified, "A welcoming public community space for Studio Guests, VIPs and Creators.")
-    await get_or_create_text(guild, community_cat, "🎬・community-meetings", staff_post, "Community meeting announcements, Studio updates and scheduled conversations.")
+    studio_lounge = await get_or_create_text(guild, community_cat, "🌸・studio-lounge", verified, "🌸 Studio Lounge • Chat, connect, share ideas and hang out with the Sommer Studios community.")
+    meeting_channel = await get_or_create_text(guild, community_cat, "🎬・community-meetings", staff_post, "🎬 Community Meetings • Official meeting announcements, schedules, Studio updates and community conversations.")
     await get_or_create_voice(guild, community_cat, "🌻 The Backlot • Chill VC", verified)
     await get_or_create_voice(guild, community_cat, "🎬 Community Meeting Room", verified)
     await get_or_create_voice(guild, community_cat, "🛟 Studio Support • Help VC", verified)
 
+    if not [m async for m in studio_lounge.history(limit=1)]:
+        await studio_lounge.send(embed=pink_embed(
+            "🌸 Welcome to the Studio Lounge",
+            "Kick back on the **Sommer Studios Backlot** 🌻🎬\n\nChat, network, share ideas, meet other creatives, or just hang out between projects. Keep it welcoming, creative and respectful. ✨"
+        ))
+    if not [m async for m in meeting_channel.history(limit=1)]:
+        await meeting_channel.send(embed=pink_embed(
+            "🎬 Community Meetings",
+            "This is the Studio call board! 📋✨\n\nOfficial **community meeting dates, Studio announcements and meeting details** will be posted here. When it is meeting time, join **🎬 Community Meeting Room**."
+        ))
+
     # VIP
-    vip_cat = await get_or_create_category(guild, "🌻⭐ VIP BACKLOT", vip_only)
+    vip_cat = await get_or_create_category(guild, "⭐ VIP BACKLOT", vip_only)
     free_resources = await get_or_create_text(guild, vip_cat, "free-resources", vip_announce)
     drops = await get_or_create_text(guild, vip_cat, "resource-drops", vip_announce)
     exclusives = await get_or_create_text(guild, vip_cat, "vip-exclusives", vip_announce)
@@ -306,7 +356,7 @@ async def setup(interaction: discord.Interaction):
     vip_updates = await get_or_create_text(guild, vip_cat, "vip-updates", vip_announce)
 
     # Creator area
-    creator_cat = await get_or_create_category(guild, "🎨🔐 CREATOR LOT", creator_only)
+    creator_cat = await get_or_create_category(guild, "🔐 CREATOR LOT", creator_only)
     creator_chat = await get_or_create_text(guild, creator_cat, "creator-chat", creator_only)
     await get_or_create_voice(guild, creator_cat, "🎙️ Creator VC", creator_only)
 
@@ -317,7 +367,7 @@ async def setup(interaction: discord.Interaction):
         staff: discord.PermissionOverwrite(view_channel=True),
         bot_member: discord.PermissionOverwrite(view_channel=True, manage_channels=True)
     })
-    logs_cat = await get_or_create_category(guild, "🎬🔒 STUDIO MANAGEMENT", {
+    logs_cat = await get_or_create_category(guild, "🔒 STUDIO MANAGEMENT", {
         everyone: discord.PermissionOverwrite(view_channel=False),
         owner: discord.PermissionOverwrite(view_channel=True),
         staff: discord.PermissionOverwrite(view_channel=True),
