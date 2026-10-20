@@ -1,6 +1,11 @@
 import os
 import re
 import io
+import asyncio
+import json
+import sqlite3
+import sys
+from urllib.parse import urlparse
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -247,6 +252,9 @@ class TicketControlView(discord.ui.View):
 @bot.event
 async def on_ready():
     print(f"Sommer Studios is online as {bot.user}.")
+    if not getattr(bot, "stream_monitor_task", None) or bot.stream_monitor_task.done():
+        init_stream_db()
+        bot.stream_monitor_task = asyncio.create_task(stream_monitor())
 
 @bot.event
 async def on_member_join(member):
@@ -691,6 +699,195 @@ async def spotlight_update(interaction: discord.Interaction):
         if not [message async for message in channel.history(limit=1)]:
             await channel.send(embed=pink_embed(title, description))
     await interaction.followup.send("🌟 Sommer Spotlight is ready! All Studio Guests can view and react. Streamers can post in now-showing; Content Creators can post in fresh-off-the-reel. Existing channel emojis are updated. Private sections keep their existing access. Automatic alerts and IG posting are not connected yet.", ephemeral=True)
+
+
+# Automatic public livestream checks. yt-dlp reads metadata only; no media download.
+# Put STREAM_DATA_DIR on persistent host storage to retain registrations on redeploy.
+STREAM_DATA_DIR = os.getenv("STREAM_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+STREAM_DB = os.path.join(STREAM_DATA_DIR, "sommer-streams.sqlite3")
+STREAM_PLATFORMS = [app_commands.Choice(name=p.title(), value=p) for p in ("twitch", "kick", "tiktok", "youtube")]
+
+def init_stream_db():
+    os.makedirs(STREAM_DATA_DIR, exist_ok=True)
+    with sqlite3.connect(STREAM_DB) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS streams (guild INTEGER, member INTEGER, platform TEXT, url TEXT, last_id TEXT, status TEXT DEFAULT 'Waiting for first check', PRIMARY KEY(guild,member,platform), UNIQUE(guild,platform,url))")
+
+def stream_url(platform, value):
+    value = value.strip()
+    if '://' not in value and '/' not in value:
+        handle = value.lstrip('@')
+        if platform == 'youtube':
+            value = 'https://www.youtube.com/' + (('channel/' + handle) if handle.startswith('UC') else '@' + handle)
+        else:
+            value = f"https://{'www.' if platform == 'tiktok' else ''}{platform}.{'tv' if platform == 'twitch' else 'com'}/{'@' if platform == 'tiktok' else ''}{handle}"
+    parsed = urlparse(value)
+    allowed = {'twitch': {'twitch.tv','www.twitch.tv'}, 'kick': {'kick.com','www.kick.com'}, 'tiktok': {'tiktok.com','www.tiktok.com'}, 'youtube': {'youtube.com','www.youtube.com'}}
+    if parsed.scheme != 'https' or parsed.hostname not in allowed[platform] or parsed.username or parsed.password or parsed.port:
+        raise ValueError('Use your full HTTPS channel link from the selected platform.')
+    path = parsed.path.strip('/')
+    if platform == 'youtube':
+        match = re.fullmatch(r'(@[A-Za-z0-9_.-]+|channel/UC[A-Za-z0-9_-]+)(?:/(?:live|streams))?', path)
+        if not match:
+            raise ValueError('Use a YouTube @handle or /channel/UC… channel link, not a video link.')
+        return 'https://www.youtube.com/' + match.group(1) + '/live'
+    match = re.fullmatch(r'(@?[A-Za-z0-9_.-]+)(?:/live)?', path)
+    if not match:
+        raise ValueError('Use a channel link or username, not a video or clip link.')
+    handle = match.group(1).lstrip('@').lower()
+    if platform == 'tiktok':
+        return f'https://www.tiktok.com/@{handle}/live'
+    return f"https://{platform}.{'tv' if platform == 'twitch' else 'com'}/{handle}"
+
+async def check_stream(url):
+    # Separate process guarantees a slow provider can be killed without blocking Discord.
+    proc = await asyncio.create_subprocess_exec(sys.executable, '-m', 'yt_dlp', '--dump-single-json', '--skip-download', '--no-playlist', '--no-warnings', '--socket-timeout', '10', '--retries', '0', '--extractor-retries', '0', '--ignore-config', '--', url, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        output, error = await asyncio.wait_for(proc.communicate(), timeout=40)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        proc.kill()
+        await proc.communicate()
+        raise
+    if proc.returncode:
+        text = error.decode(errors='replace').lower()
+        if any(word in text for word in ('not currently live', 'not live', 'offline', 'not currently broadcasting', 'is not broadcasting')):
+            return None
+        raise RuntimeError('Provider check failed (offline, unavailable, or blocked); retrying later')
+    data = json.loads(output)
+    if not (data.get('is_live') is True or data.get('live_status') == 'is_live'):
+        return None
+    identity = str(data.get('id') or '')
+    if not identity:
+        raise RuntimeError('Provider did not return a stream ID')
+    return {'id': identity, 'title': str(data.get('title') or 'Come join the stream!')[:240]}
+
+def streamer_allowed(member):
+    return any(role.name == ROLE_STREAMER for role in member.roles)
+
+@bot.tree.command(name="stream_add", description="Register your channel for automatic live alerts")
+@app_commands.guild_only()
+@app_commands.choices(platform=STREAM_PLATFORMS)
+async def stream_add(interaction: discord.Interaction, platform: app_commands.Choice[str], channel: str):
+    if not streamer_allowed(interaction.user):
+        return await interaction.response.send_message('You need the 🎙️ Streamer role. Apply in role-requests first.', ephemeral=True)
+    try:
+        url = stream_url(platform.value, channel)
+    except ValueError as error:
+        return await interaction.response.send_message(str(error), ephemeral=True)
+    init_stream_db()
+    try:
+        with sqlite3.connect(STREAM_DB) as db:
+            db.execute("INSERT INTO streams(guild,member,platform,url) VALUES(?,?,?,?) ON CONFLICT(guild,member,platform) DO UPDATE SET url=excluded.url,last_id=CASE WHEN streams.url=excluded.url THEN streams.last_id ELSE NULL END,status='Waiting for next check'", (interaction.guild_id,interaction.user.id,platform.value,url))
+    except sqlite3.IntegrityError:
+        return await interaction.response.send_message('That channel is already registered by another member. Ask Studio staff if it needs transferring.', ephemeral=True)
+    await interaction.response.send_message(f'🎬 Registered **{platform.name}**: {url}\nThe bot will check automatically and post detected live streams in **now-showing**. Use /stream_list to check status. Public platform checks can be blocked or delayed.', ephemeral=True)
+
+@bot.tree.command(name="stream_remove", description="Stop alerts for one of your streaming platforms")
+@app_commands.guild_only()
+@app_commands.choices(platform=STREAM_PLATFORMS)
+async def stream_remove(interaction: discord.Interaction, platform: app_commands.Choice[str]):
+    init_stream_db()
+    with sqlite3.connect(STREAM_DB) as db:
+        count = db.execute('DELETE FROM streams WHERE guild=? AND member=? AND platform=?',(interaction.guild_id,interaction.user.id,platform.value)).rowcount
+    await interaction.response.send_message('Registration removed.' if count else 'You have no registration for that platform.', ephemeral=True)
+
+@bot.tree.command(name="stream_list", description="View your stream registrations and automatic check status")
+@app_commands.guild_only()
+async def stream_list(interaction: discord.Interaction):
+    init_stream_db()
+    with sqlite3.connect(STREAM_DB) as db:
+        rows = db.execute('SELECT platform,url,status FROM streams WHERE guild=? AND member=?',(interaction.guild_id,interaction.user.id)).fetchall()
+    await interaction.response.send_message('\n\n'.join(f'**{p.title()}**: {url}\n{status}' for p,url,status in rows) or 'No channels registered. Use /stream_add after receiving your Streamer role.', ephemeral=True)
+
+async def process_registration(row):
+    guild_id, member_id, platform, url, last_id, status = row
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return
+    try:
+        member = await guild.fetch_member(member_id)
+    except discord.NotFound:
+        member = None
+    if not member or not streamer_allowed(member):
+        result_status = 'Paused: member missing or Streamer role removed'
+    else:
+        target = next((c for c in guild.text_channels if _clean_name(c.name) == 'nowshowing'), None)
+        if not target:
+            result_status = 'Paused: run /spotlight_update to create now-showing'
+        else:
+            try:
+                live = await check_stream(url)
+                result_status = 'Offline / no active live detected'
+                if live:
+                    result_status = 'Live detected'
+                    if live['id'] != last_id:
+                        # Re-read registration after the network check in case it was changed or removed.
+                        with sqlite3.connect(STREAM_DB) as db:
+                            current = db.execute('SELECT url,last_id FROM streams WHERE guild=? AND member=? AND platform=?',(guild_id,member_id,platform)).fetchone()
+                        if not current or current[0] != url or current[1] == live['id']:
+                            return
+                        member = await guild.fetch_member(member_id)
+                        if not streamer_allowed(member):
+                            return
+                        embed = pink_embed(f'🔴 {member.display_name[:100]} is live on {platform.title()}!', live['title'])
+                        embed.url = url
+                        embed.add_field(name='🎬 Now Showing', value=f'[Watch & show some love!]({url})', inline=False)
+                        await target.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                        with sqlite3.connect(STREAM_DB) as db:
+                            db.execute('UPDATE streams SET last_id=? WHERE guild=? AND member=? AND platform=? AND url=?',(live['id'],guild_id,member_id,platform,url))
+            except Exception as error:
+                result_status = 'Check unavailable; retrying automatically (' + type(error).__name__ + ')'
+    with sqlite3.connect(STREAM_DB) as db:
+        db.execute('UPDATE streams SET status=? WHERE guild=? AND member=? AND platform=? AND url=?',(datetime.now(timezone.utc).strftime('%m/%d %H:%M UTC') + ' — ' + result_status,guild_id,member_id,platform,url))
+
+async def stream_monitor():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            with sqlite3.connect(STREAM_DB) as db:
+                rows = db.execute('SELECT guild,member,platform,url,last_id,status FROM streams').fetchall()
+            # A small fixed worker pool prevents a large registry exhausting host resources.
+            queue = asyncio.Queue()
+            for row in rows:
+                queue.put_nowait(row)
+            async def worker():
+                while not queue.empty():
+                    row = queue.get_nowait()
+                    try:
+                        await process_registration(row)
+                    except Exception as error:
+                        print('Stream check failed:', type(error).__name__)
+                    finally:
+                        queue.task_done()
+            await asyncio.gather(*(worker() for _ in range(min(3,len(rows)))))
+        except Exception as error:
+            print('Stream monitor cycle failed:', type(error).__name__)
+        await asyncio.sleep(180)
+
+@bot.tree.command(name="stream_setup", description="Post streamer registration instructions and enable automatic live checks")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(administrator=True)
+async def stream_setup(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        import yt_dlp
+    except ImportError:
+        return await interaction.followup.send('Add **yt-dlp** to requirements.txt on your host, reinstall dependencies and restart the bot, then rerun /stream_setup.', ephemeral=True)
+    channel = next((c for c in interaction.guild.text_channels if _clean_name(c.name) == 'onair'), None)
+    target = next((c for c in interaction.guild.text_channels if _clean_name(c.name) == 'nowshowing'), None)
+    if not channel or not target:
+        return await interaction.followup.send('Run /studio_update and /spotlight_update first.', ephemeral=True)
+    embed = pink_embed('🎙️ Register Your Stream', 'Have your **Streamer** role? Register once with **/stream_add**!\n\nChoose **Twitch, Kick, TikTok or YouTube**, then enter your username or channel link. YouTube accepts @handles and /channel/ links.\n\n🔴 Detected live streams automatically appear in **now-showing** for all verified members. Checks run about every 3 minutes plus processing time.\n📋 **/stream_list** — your channels and check status.\n🗑️ **/stream_remove** — stop alerts for a platform.\n\nNo extra staff approval needed. One channel per platform per member. Public stream detection is best effort; provider restrictions can delay or block checks, especially TikTok and YouTube. No IG connection is needed.')
+    existing = None
+    async for message in channel.history(limit=100):
+        if message.author.id == bot.user.id and message.embeds and message.embeds[0].title == embed.title:
+            existing = message
+            break
+    if existing:
+        await existing.edit(embed=embed)
+    else:
+        await channel.send(embed=embed)
+    await target.edit(topic='Automatic detected live alerts for registered Twitch, Kick, TikTok and YouTube streamers. All verified Studio Guests can view and react.')
+    await interaction.followup.send('🎬 Stream registration is ready! Members use /stream_add. Keep STREAM_DATA_DIR on persistent host storage so registrations survive redeploys. Use /stream_list to verify detection; no live platform check has been proven by setup alone.', ephemeral=True)
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env or hosting environment variables.")
