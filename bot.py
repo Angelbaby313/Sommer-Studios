@@ -235,7 +235,7 @@ class TicketControlView(discord.ui.View):
         data = "\n".join(lines).encode("utf-8")
         transcript = discord.File(io.BytesIO(data), filename=f"{interaction.channel.name}-transcript.txt")
 
-        logs = discord.utils.get(interaction.guild.text_channels, name="ticket-logs")
+        logs = next((c for c in interaction.guild.text_channels if _clean_name(c.name) == "ticketlogs"), None)
         if logs:
             await logs.send(
                 content=f"🔒 Closed **#{interaction.channel.name}** by {interaction.user.mention}",
@@ -250,7 +250,7 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
-    welcome = discord.utils.get(member.guild.text_channels, name="welcome")
+    welcome = next((c for c in member.guild.text_channels if _clean_name(c.name) == "welcome"), None)
     if welcome:
         embed = pink_embed(
             "🎬 Welcome to Sommer Studios!",
@@ -638,6 +638,59 @@ async def studio_update(interaction: discord.Interaction):
     else:
         await requests.send(embed=embed, view=RoleRequestPanel())
     await interaction.followup.send("✨ Hollywood expansion ready! Private Content Creator Suite, Sommer Live and role applications are set up. Existing Studio roles and sections are preserved. Put the bot role above the roles it approves. Live alerts are member-posted; automatic platform alerts are not configured.", ephemeral=True)
+
+
+CHANNEL_DECORATIONS = {
+    "welcome": "🎟️・welcome", "verify": "✨・verify",
+    "helpful-info": "📋・helpful-info", "services-offered": "🎨・services-offered",
+    "price-list": "💰・price-list", "start-a-project": "🎬・start-a-project",
+    "showcase": "🖼️・showcase", "current-projects": "🚧・current-projects",
+    "partners": "🤝・partners", "free-resources": "🎁・free-resources",
+    "resource-drops": "📦・resource-drops", "vip-exclusives": "💎・vip-exclusives",
+    "vip-lounge": "🥂・vip-lounge", "vip-updates": "🔔・vip-updates",
+    "creator-chat": "🎨・creator-chat", "ticket-logs": "🗂️・ticket-logs",
+}
+
+@bot.tree.command(name="spotlight_update", description="Add public Spotlight channels and decorate existing channel names")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.guild_only()
+async def spotlight_update(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    guest = discord.utils.get(guild.roles, name=ROLE_GUEST)
+    if not guest:
+        return await interaction.followup.send("Run /setup first to create Studio Guest verification.", ephemeral=True)
+    content = discord.utils.get(guild.roles, name=ROLE_CONTENT)
+    streamer = discord.utils.get(guild.roles, name=ROLE_STREAMER)
+    if not content or not streamer:
+        return await interaction.followup.send("Run /studio_update first to create the creator and streamer roles.", ephemeral=True)
+    for channel in guild.text_channels:
+        new_name = next((name for old, name in CHANNEL_DECORATIONS.items() if _clean_name(channel.name) == _clean_name(old)), None)
+        if new_name and channel.name != new_name:
+            await channel.edit(name=new_name, reason="Sommer Studios Hollywood channel styling")
+    perms = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guest: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True, add_reactions=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True, embed_links=True, attach_files=True),
+    }
+    # These roles never independently grant verification or public channel access.
+    # Studio Guest is the verification pass; staff can always manage the Spotlight.
+    for role_name in (ROLE_OWNER, ROLE_STAFF):
+        role = discord.utils.get(guild.roles, name=role_name)
+        if role:
+            perms[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True, embed_links=True)
+    category = await get_or_create_category(guild, "🌟🎬 SOMMER SPOTLIGHT", perms)
+    for name, role, title, description in (
+        ("🔴・now-showing", streamer, "🔴 Now Showing", "Streamers: share your Twitch, Kick, TikTok or YouTube live link and tell us what you’re streaming. Everyone verified can watch and show support!\n\nLive links are manually posted for now; automatic alerts are not connected yet."),
+        ("📸・fresh-off-the-reel", content, "📸 Fresh Off the Reel", "Content Creators: share your pics, clips, reels and Instagram post links. Everyone verified can view and react—let’s support each other!\n\nFollow and tag **@sommerstudioshq** on Instagram. Automatic IG tag posting is not connected yet."),
+    ):
+        channel_perms = dict(perms)
+        # A posting role permits sending, but Studio Guest is still needed to view.
+        channel_perms[role] = discord.PermissionOverwrite(send_messages=True, attach_files=True, embed_links=True)
+        channel = await get_or_create_text(guild, category, name, channel_perms, description)
+        if not [message async for message in channel.history(limit=1)]:
+            await channel.send(embed=pink_embed(title, description))
+    await interaction.followup.send("🌟 Sommer Spotlight is ready! All Studio Guests can view and react. Streamers can post in now-showing; Content Creators can post in fresh-off-the-reel. Existing channel emojis are updated. Private sections keep their existing access. Automatic alerts and IG posting are not connected yet.", ephemeral=True)
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Add it to your .env or hosting environment variables.")
